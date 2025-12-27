@@ -1,447 +1,420 @@
 from flask import Flask, request, jsonify
-import requests
+import cloudscraper
 import json
-import uuid
 import time
 import re
+from urllib.parse import urlparse, parse_qs, unquote
+import gzip
+import zstandard as zstd
+import brotli
+from threading import Thread, Lock
+import uuid
 
 app = Flask(__name__)
 
-@app.route('/', methods=['GET'])
-def home():
-    return jsonify({
-        'status': 'success',
-        'message': 'Welcome to Perplexity AI API',
-        'apidev': '@ISmartCoder',
-        'api_channel': '@abirxdhackz',
-        'documentation': {
-            'endpoint': '/api/ask',
-            'method': 'GET',
-            'description': 'Query Perplexity AI for answers to your questions',
-            'parameters': {
-                'prompt': {
-                    'type': 'string',
-                    'required': True,
-                    'description': 'Your question or query'
-                },
-                'mode': {
-                    'type': 'string',
-                    'required': False,
-                    'default': 'concise',
-                    'options': ['concise', 'detailed'],
-                    'description': 'Response mode - concise or detailed answer'
-                },
-                'model': {
-                    'type': 'string',
-                    'required': False,
-                    'default': 'turbo',
-                    'options': ['turbo', 'experimental'],
-                    'description': 'AI model to use for processing'
-                },
-                'search_focus': {
-                    'type': 'string',
-                    'required': False,
-                    'default': 'internet',
-                    'options': ['internet', 'scholar', 'writing', 'wolfram', 'youtube', 'reddit'],
-                    'description': 'Focus area for search results'
-                },
-                'debug': {
-                    'type': 'string',
-                    'required': False,
-                    'default': 'false',
-                    'options': ['true', 'false'],
-                    'description': 'Enable debug mode to see raw response'
-                }
-            },
-            'example_requests': [
-                {
-                    'description': 'Basic query',
-                    'url': '/api/ask?prompt=What is artificial intelligence?'
-                },
-                {
-                    'description': 'Detailed response',
-                    'url': '/api/ask?prompt=Explain quantum computing&mode=detailed'
-                },
-                {
-                    'description': 'Academic search',
-                    'url': '/api/ask?prompt=Latest research on climate change&search_focus=scholar'
-                },
-                {
-                    'description': 'With debug mode',
-                    'url': '/api/ask?prompt=How does blockchain work?&debug=true'
-                }
-            ],
-            'response_format': {
-                'success': {
-                    'status': 'success',
-                    'prompt': 'Your original query',
-                    'answer': 'AI generated answer',
-                    'sources': [
-                        {
-                            'name': 'Source title',
-                            'url': 'Source URL',
-                            'snippet': 'Relevant excerpt'
-                        }
-                    ],
-                    'metadata': {
-                        'backend_uuid': 'Unique identifier'
-                    },
-                    'mode': 'Response mode used',
-                    'model': 'Model used',
-                    'timestamp': 'Unix timestamp',
-                    'apidev': '@ISmartCoder',
-                    'api_channel': '@abirxdhackz'
-                },
-                'error': {
-                    'status': 'error',
-                    'message': 'Error description',
-                    'apidev': '@ISmartCoder',
-                    'api_channel': '@abirxdhackz'
-                }
-            },
-            'status_codes': {
-                '200': 'Success - Request completed successfully',
-                '400': 'Bad Request - Missing or invalid parameters',
-                '500': 'Internal Server Error - Processing failed',
-                '504': 'Gateway Timeout - Request took too long'
+class SpotMateAPI:
+    def __init__(self):
+        self.scraper = cloudscraper.create_scraper(
+            browser={
+                'browser': 'chrome',
+                'platform': 'android',
+                'mobile': True
             }
-        }
-    }), 200
-
-def scrape_fresh_session():
-    session = requests.Session()
-    
-    url = 'https://www.perplexity.ai'
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Linux; Android 10; Redmi 8A Dual Build/QKQ1.191014.001) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.7499.34 Mobile Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
-        'Accept-Encoding': 'gzip, deflate, br, zstd',
-        'sec-ch-ua-platform': '"Android"',
-        'sec-ch-ua': '"Android WebView";v="143", "Chromium";v="143", "Not A(Brand";v="24"',
-        'sec-ch-ua-mobile': '?1',
-        'sec-fetch-site': 'none',
-        'sec-fetch-mode': 'navigate',
-        'sec-fetch-dest': 'document',
-        'accept-language': 'en-GB,en-US;q=0.9,en;q=0.8',
-        'priority': 'u=0, i',
-        'Cache-Control': 'no-cache',
-        'Pragma': 'no-cache'
-    }
-    
-    response = session.get(url, headers=headers, timeout=30)
-    html = response.text
-    
-    cookies = {}
-    for cookie in session.cookies:
-        cookies[cookie.name] = cookie.value
-    
-    visitor_id = cookies.get('pplx.visitor-id', str(uuid.uuid4()))
-    session_id = cookies.get('pplx.session-id', str(uuid.uuid4()))
-    
-    version_match = re.search(r'"version":"([\d.]+)"', html)
-    version = version_match.group(1) if version_match else '2.18'
-    
-    csrf_match = re.search(r'csrf-token["\']?\s*[:=]\s*["\']([^"\']+)', html)
-    csrf_token = csrf_match.group(1) if csrf_match else f'{uuid.uuid4().hex}%7C{uuid.uuid4().hex}'
-    
-    buildId_match = re.search(r'"buildId":"([^"]+)"', html)
-    buildId = buildId_match.group(1) if buildId_match else None
-    
-    api_url_match = re.search(r'"apiUrl":"([^"]+)"', html)
-    api_url = api_url_match.group(1) if api_url_match else 'https://www.perplexity.ai/rest/sse/perplexity_ask'
-    
-    current_time = int(time.time())
-    
-    scraped_data = {
-        'session': session,
-        'cookies': cookies,
-        'visitor_id': visitor_id,
-        'session_id': session_id,
-        'version': version,
-        'csrf_token': csrf_token,
-        'buildId': buildId,
-        'api_url': api_url,
-        'timestamp': current_time
-    }
-    
-    return scraped_data
-
-def parse_response(full_response):
-    answer_text = ''
-    sources = []
-    metadata = {}
-    
-    lines = full_response.strip().split('\n')
-    
-    for line in lines:
-        if not line.startswith('data: '):
-            continue
-            
-        json_str = line[6:].strip()
+        )
+        self.base_url = "https://spotmate.online"
+        self.session_lock = Lock()
         
-        if not json_str or json_str == '{}':
-            continue
-        
-        try:
-            data = json.loads(json_str)
-            
-            if 'backend_uuid' in data:
-                metadata['backend_uuid'] = data['backend_uuid']
-            
-            if 'text' in data and data.get('step_type') == 'FINAL':
-                text_content = data['text']
-                
-                try:
-                    steps = json.loads(text_content)
-                    
-                    if isinstance(steps, list):
-                        for step in steps:
-                            if step.get('step_type') == 'FINAL':
-                                answer_str = step.get('content', {}).get('answer', '')
-                                
-                                if answer_str:
-                                    answer_data = json.loads(answer_str)
-                                    answer_text = answer_data.get('answer', '')
-                                    sources = answer_data.get('web_results', [])
-                                    
-                                    if not sources:
-                                        sources = answer_data.get('extra_web_results', [])
-                                    
-                                    break
-                except:
-                    pass
-            
-            if 'blocks' in data and not answer_text:
-                for block in data['blocks']:
-                    if block.get('intended_usage') in ['ask_text_0_markdown', 'ask_text']:
-                        markdown_block = block.get('markdown_block', {})
-                        if markdown_block.get('answer'):
-                            answer_text = markdown_block['answer']
-                            break
-        
-        except:
-            continue
-    
-    return answer_text.strip(), sources, metadata
-
-@app.route('/api/ask', methods=['GET'])
-def perplexity_ask():
-    prompt = request.args.get('prompt')
-    
-    if not prompt:
-        return jsonify({
-            'status': 'error',
-            'message': 'Prompt parameter is required',
-            'apidev': '@ISmartCoder',
-            'api_channel': '@abirxdhackz'
-        }), 400
-    
-    mode = request.args.get('mode', 'concise')
-    model = request.args.get('model', 'turbo')
-    search_focus = request.args.get('search_focus', 'internet')
-    
-    try:
-        scraped = scrape_fresh_session()
-        
-        session = scraped['session']
-        base_cookies = scraped['cookies']
-        visitor_id = scraped['visitor_id']
-        session_id = scraped['session_id']
-        version = scraped['version']
-        csrf_token = scraped['csrf_token']
-        api_url = scraped['api_url']
-        current_time = scraped['timestamp']
-        
-        frontend_uuid = str(uuid.uuid4())
-        backend_uuid = str(uuid.uuid4())
-        read_write_token = str(uuid.uuid4())
-        request_id = str(uuid.uuid4())
-        
-        payload = {
-            "params": {
-                "last_backend_uuid": backend_uuid,
-                "read_write_token": read_write_token,
-                "attachments": [],
-                "language": "en-US",
-                "timezone": "Asia/Dhaka",
-                "search_focus": search_focus,
-                "sources": ["web"],
-                "frontend_uuid": frontend_uuid,
-                "mode": mode,
-                "model_preference": model,
-                "is_related_query": False,
-                "is_sponsored": False,
-                "prompt_source": "user",
-                "query_source": "followup",
-                "is_incognito": False,
-                "time_from_first_type": 1485.7000000178814,
-                "local_search_enabled": False,
-                "use_schematized_api": True,
-                "send_back_text_in_streaming_api": False,
-                "supported_block_use_cases": [
-                    "answer_modes",
-                    "media_items",
-                    "knowledge_cards",
-                    "inline_entity_cards",
-                    "place_widgets",
-                    "finance_widgets",
-                    "prediction_market_widgets",
-                    "sports_widgets",
-                    "flight_status_widgets",
-                    "news_widgets",
-                    "shopping_widgets",
-                    "jobs_widgets",
-                    "search_result_widgets",
-                    "inline_images",
-                    "inline_assets",
-                    "placeholder_cards",
-                    "diff_blocks",
-                    "inline_knowledge_cards",
-                    "entity_group_v2",
-                    "refinement_filters",
-                    "canvas_mode",
-                    "maps_preview",
-                    "answer_tabs",
-                    "price_comparison_widgets",
-                    "preserve_latex",
-                    "in_context_suggestions"
-                ],
-                "client_coordinates": None,
-                "mentions": [],
-                "skip_search_enabled": True,
-                "is_nav_suggestions_disabled": False,
-                "followup_source": "link",
-                "source": "mweb",
-                "always_search_override": False,
-                "override_no_search": False,
-                "should_ask_for_mcp_tool_confirmation": True,
-                "supported_features": ["browser_agent_permission_banner_v1.1"],
-                "version": version
-            },
-            "query_str": prompt
-        }
-        
-        additional_cookies = {
-            'pplx.visitor-id': visitor_id,
-            'pplx.session-id': session_id,
-            'next-auth.csrf-token': csrf_token,
-            'next-auth.callback-url': 'https%3A%2F%2Fwww.perplexity.ai%2Fapi%2Fauth%2Fsignin-callback%3Fredirect%3Dhttps%253A%252F%252Fwww.perplexity.ai',
-            'pplx.mweb-splash-page-dismissed': 'true',
-            'pplx.la-status': 'allowed',
-            '__ps_r': '_',
-            '__ps_sr': '_',
-            '__ps_fva': str(current_time * 1000),
-            '_fbp': f'fb.1.{current_time}.{uuid.uuid4().hex}',
-            'pplx.metadata': json.dumps({
-                "qc": 2,
-                "qcu": 0,
-                "qcm": 0,
-                "qcc": 0,
-                "qcco": 0,
-                "qccol": 0,
-                "qcdr": 0,
-                "qcs": 0,
-                "qcd": 0,
-                "hli": False,
-                "hcga": False,
-                "hcds": False,
-                "hso": False,
-                "hfo": False,
-                "hsco": False,
-                "hfco": False,
-                "hsma": False,
-                "hdc": False,
-                "fqa": current_time * 1000,
-                "lqa": current_time * 1000
-            })
-        }
-        
-        all_cookies = {**base_cookies, **additional_cookies}
-        
+    def init_session(self):
         headers = {
-            'User-Agent': 'Mozilla/5.0 (Linux; Android 10; Redmi 8A Dual Build/QKQ1.191014.001) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.7499.34 Mobile Safari/537.36',
-            'Accept': 'text/event-stream',
+            'User-Agent': 'Mozilla/5.0 (Linux; Android 15; V2434) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.7499.35 Mobile Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
             'Accept-Encoding': 'gzip, deflate, br, zstd',
-            'Content-Type': 'application/json',
-            'x-request-id': request_id,
-            'sec-ch-ua-platform': '"Android"',
+            'Accept-Language': 'en-GB,en-US;q=0.9,en;q=0.8',
             'sec-ch-ua': '"Android WebView";v="143", "Chromium";v="143", "Not A(Brand";v="24"',
             'sec-ch-ua-mobile': '?1',
-            'x-perplexity-request-reason': 'perplexity-query-state-provider',
-            'origin': 'https://www.perplexity.ai',
-            'x-requested-with': 'mark.via.gp',
+            'sec-ch-ua-platform': '"Android"',
+            'sec-fetch-site': 'none',
+            'sec-fetch-mode': 'navigate',
+            'sec-fetch-user': '?1',
+            'sec-fetch-dest': 'document',
+            'upgrade-insecure-requests': '1'
+        }
+        
+        with self.session_lock:
+            try:
+                response = self.scraper.get(f'{self.base_url}/en1', headers=headers, timeout=30)
+                
+                if response.status_code == 200:
+                    session_cookies = response.cookies.get_dict()
+                    
+                    csrf_match = re.search(r'name="csrf-token"\s+content="([^"]+)"', response.text)
+                    csrf_token = csrf_match.group(1) if csrf_match else None
+                    
+                    return {
+                        'success': True,
+                        'cookies': session_cookies,
+                        'csrf_token': csrf_token
+                    }
+                else:
+                    return {
+                        'success': False,
+                        'error': f'Status code: {response.status_code}'
+                    }
+            except Exception as e:
+                return {
+                    'success': False,
+                    'error': str(e)
+                }
+        
+    def get_track_data(self, spotify_url, csrf_token, cookies):
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Linux; Android 15; V2434) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.7499.35 Mobile Safari/537.36',
+            'Accept': '*/*',
+            'Accept-Encoding': 'gzip, deflate, br, zstd',
+            'Content-Type': 'application/json',
+            'sec-ch-ua-platform': '"Android"',
+            'x-csrf-token': csrf_token,
+            'sec-ch-ua': '"Android WebView";v="143", "Chromium";v="143", "Not A(Brand";v="24"',
+            'sec-ch-ua-mobile': '?1',
+            'origin': self.base_url,
             'sec-fetch-site': 'same-origin',
             'sec-fetch-mode': 'cors',
             'sec-fetch-dest': 'empty',
-            'referer': 'https://www.perplexity.ai/search/hi-lMwqBQEoQRKoNpRoTe6QRA',
+            'referer': f'{self.base_url}/en1',
             'accept-language': 'en-GB,en-US;q=0.9,en;q=0.8',
-            'priority': 'u=1, i',
-            'Cache-Control': 'no-cache',
-            'Pragma': 'no-cache'
+            'priority': 'u=1, i'
         }
         
-        if csrf_token and csrf_token != f'{uuid.uuid4().hex}%7C{uuid.uuid4().hex}':
-            headers['x-csrf-token'] = csrf_token
+        payload = {'spotify_url': spotify_url}
         
-        time.sleep(0.5)
+        try:
+            response = self.scraper.post(
+                f'{self.base_url}/getTrackData',
+                json=payload,
+                headers=headers,
+                cookies=cookies,
+                timeout=30
+            )
+            
+            if response.status_code == 200:
+                return {
+                    'success': True,
+                    'data': response.json()
+                }
+            else:
+                return {
+                    'success': False,
+                    'error': f'Status code: {response.status_code}'
+                }
+        except Exception as e:
+            return {
+                'success': False,
+                'error': str(e)
+            }
         
-        response = session.post(api_url, json=payload, headers=headers, cookies=all_cookies, timeout=120)
+    def convert_track(self, spotify_url, csrf_token, cookies):
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Linux; Android 15; V2434) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.7499.35 Mobile Safari/537.36',
+            'Accept': '*/*',
+            'Accept-Encoding': 'gzip, deflate, br, zstd',
+            'Content-Type': 'application/json',
+            'sec-ch-ua-platform': '"Android"',
+            'x-csrf-token': csrf_token,
+            'sec-ch-ua': '"Android WebView";v="143", "Chromium";v="143", "Not A(Brand";v="24"',
+            'sec-ch-ua-mobile': '?1',
+            'origin': self.base_url,
+            'sec-fetch-site': 'same-origin',
+            'sec-fetch-mode': 'cors',
+            'sec-fetch-dest': 'empty',
+            'referer': f'{self.base_url}/en1',
+            'accept-language': 'en-GB,en-US;q=0.9,en;q=0.8',
+            'priority': 'u=1, i'
+        }
         
-        if response.status_code != 200:
+        payload = {'urls': spotify_url}
+        
+        try:
+            response = self.scraper.post(
+                f'{self.base_url}/convert',
+                json=payload,
+                headers=headers,
+                cookies=cookies,
+                timeout=30
+            )
+            
+            if response.status_code == 200:
+                return {
+                    'success': True,
+                    'data': response.json()
+                }
+            else:
+                return {
+                    'success': False,
+                    'error': f'Status code: {response.status_code}'
+                }
+        except Exception as e:
+            return {
+                'success': False,
+                'error': str(e)
+            }
+        
+    def process_track(self, spotify_url):
+        session_result = self.init_session()
+        if not session_result['success']:
+            return {
+                'success': False,
+                'error': 'Failed to initialize session',
+                'details': session_result.get('error')
+            }
+            
+        csrf_token = session_result['csrf_token']
+        cookies = session_result['cookies']
+        
+        time.sleep(1)
+        
+        track_result = self.get_track_data(spotify_url, csrf_token, cookies)
+        if not track_result['success']:
+            return {
+                'success': False,
+                'error': 'Failed to get track data',
+                'details': track_result.get('error')
+            }
+            
+        time.sleep(2)
+        
+        convert_result = self.convert_track(spotify_url, csrf_token, cookies)
+        if not convert_result['success']:
+            return {
+                'success': False,
+                'error': 'Failed to convert track',
+                'details': convert_result.get('error')
+            }
+            
+        convert_data = convert_result['data']
+        track_data = track_result['data']
+        
+        download_url = None
+        if 'download_url' in convert_data:
+            download_url = convert_data['download_url']
+        elif 'url' in convert_data:
+            download_url = convert_data['url']
+        elif 'data' in convert_data and 'download_url' in convert_data['data']:
+            download_url = convert_data['data']['download_url']
+            
+        if not download_url:
+            return {
+                'success': False,
+                'error': 'Could not extract download URL'
+            }
+            
+        return {
+            'success': True,
+            'track_info': track_data,
+            'download_url': download_url,
+            'raw_response': {
+                'track_data': track_data,
+                'convert_data': convert_data
+            }
+        }
+
+spotmate_api = SpotMateAPI()
+
+def validate_spotify_url(url):
+    patterns = [
+        r'https?://open\.spotify\.com/track/[a-zA-Z0-9]+',
+        r'spotify:track:[a-zA-Z0-9]+'
+    ]
+    
+    for pattern in patterns:
+        if re.match(pattern, url):
+            return True
+    return False
+
+@app.route('/', methods=['GET'])
+def home():
+    docs = {
+        "api_name": "SpotMate Professional API",
+        "version": "1.0.0",
+        "description": "Professional Spotify Music Downloader API",
+        "api_dev": "@ISmartCoder",
+        "updates_channel": "@abirxdhackz",
+        "developer": "Abir Arafat Chawdhury",
+        "endpoints": {
+            "/": {
+                "method": "GET",
+                "description": "API Documentation",
+                "parameters": "None"
+            },
+            "/sp/dl": {
+                "method": "GET",
+                "description": "Download Spotify Track",
+                "parameters": {
+                    "url": {
+                        "type": "string",
+                        "required": True,
+                        "description": "Spotify track URL",
+                        "example": "https://open.spotify.com/track/56zZ48jdyY2oDXHVnwg5Di"
+                    }
+                },
+                "example_request": "/sp/dl?url=https://open.spotify.com/track/56zZ48jdyY2oDXHVnwg5Di",
+                "response_format": {
+                    "success": "boolean",
+                    "request_id": "string (UUID)",
+                    "spotify_url": "string",
+                    "track_info": {
+                        "id": "string",
+                        "name": "string",
+                        "artists": "array",
+                        "album": "object",
+                        "duration_ms": "integer"
+                    },
+                    "download_url": "string",
+                    "raw_response": "object",
+                    "api_dev": "string",
+                    "updates_channel": "string",
+                    "timestamp": "integer"
+                }
+            }
+        },
+        "response_codes": {
+            "200": "Success",
+            "400": "Bad Request - Missing or invalid parameters",
+            "500": "Internal Server Error"
+        },
+        "usage_examples": {
+            "curl": "curl 'http://localhost:8000/sp/dl?url=https://open.spotify.com/track/56zZ48jdyY2oDXHVnwg5Di'",
+            "python": "import requests\nresponse = requests.get('http://localhost:8000/sp/dl', params={'url': 'https://open.spotify.com/track/56zZ48jdyY2oDXHVnwg5Di'})\nprint(response.json())",
+            "javascript": "fetch('http://localhost:8000/sp/dl?url=https://open.spotify.com/track/56zZ48jdyY2oDXHVnwg5Di').then(res => res.json()).then(data => console.log(data))"
+        },
+        "notes": [
+            "This API uses threading for concurrent requests",
+            "All responses are in JSON format",
+            "Rate limiting may apply for excessive requests",
+            "Download URLs are temporary and expire after some time"
+        ],
+        "support": {
+            "telegram": "@abirxdhackz",
+            "developer": "@ISmartCoder"
+        }
+    }
+    
+    return jsonify(docs), 200
+
+@app.route('/sp/dl', methods=['GET'])
+def download_spotify():
+    request_id = str(uuid.uuid4())
+    timestamp = int(time.time())
+    
+    spotify_url = request.args.get('url')
+    
+    if not spotify_url:
+        return jsonify({
+            "success": False,
+            "error": "Missing required parameter: url",
+            "request_id": request_id,
+            "api_dev": "@ISmartCoder",
+            "updates_channel": "@abirxdhackz",
+            "timestamp": timestamp,
+            "usage": "Add ?url=YOUR_SPOTIFY_URL to the request"
+        }), 400
+        
+    if not validate_spotify_url(spotify_url):
+        return jsonify({
+            "success": False,
+            "error": "Invalid Spotify URL format",
+            "request_id": request_id,
+            "spotify_url": spotify_url,
+            "api_dev": "@ISmartCoder",
+            "updates_channel": "@abirxdhackz",
+            "timestamp": timestamp,
+            "expected_format": "https://open.spotify.com/track/XXXXXXXXX"
+        }), 400
+        
+    try:
+        result = spotmate_api.process_track(spotify_url)
+        
+        if result['success']:
+            response_data = {
+                "success": True,
+                "request_id": request_id,
+                "spotify_url": spotify_url,
+                "track_info": result['track_info'],
+                "download_url": result['download_url'],
+                "raw_response": result['raw_response'],
+                "api_dev": "@ISmartCoder",
+                "updates_channel": "@abirxdhackz",
+                "developer": "Abir Arafat Chawdhury",
+                "timestamp": timestamp,
+                "message": "Track processed successfully"
+            }
+            return jsonify(response_data), 200
+        else:
             return jsonify({
-                'status': 'error',
-                'message': f'Failed to fetch data: HTTP {response.status_code}',
-                'response_text': response.text[:500],
-                'apidev': '@ISmartCoder',
-                'api_channel': '@abirxdhackz'
+                "success": False,
+                "error": result.get('error', 'Unknown error'),
+                "details": result.get('details'),
+                "request_id": request_id,
+                "spotify_url": spotify_url,
+                "api_dev": "@ISmartCoder",
+                "updates_channel": "@abirxdhackz",
+                "timestamp": timestamp
             }), 500
-        
-        full_response = response.text
-        answer_text, sources, metadata = parse_response(full_response)
-        
-        debug_mode = request.args.get('debug', 'false').lower() == 'true'
-        
-        response_data = {
-            'status': 'success',
-            'prompt': prompt,
-            'answer': answer_text if answer_text else "No answer received",
-            'sources': sources,
-            'metadata': metadata,
-            'mode': mode,
-            'model': model,
-            'timestamp': current_time,
-            'apidev': '@ISmartCoder',
-            'api_channel': '@abirxdhackz'
-        }
-        
-        if debug_mode:
-            response_data['raw_response'] = full_response
-        
-        return jsonify(response_data), 200
-        
-    except requests.exceptions.Timeout:
-        return jsonify({
-            'status': 'error',
-            'message': 'Request timeout',
-            'apidev': '@ISmartCoder',
-            'api_channel': '@abirxdhackz'
-        }), 504
-        
-    except requests.exceptions.RequestException as e:
-        return jsonify({
-            'status': 'error',
-            'message': f'Request failed: {str(e)}',
-            'apidev': '@ISmartCoder',
-            'api_channel': '@abirxdhackz'
-        }), 500
-        
+            
     except Exception as e:
         return jsonify({
-            'status': 'error',
-            'message': f'Internal error: {str(e)}',
-            'apidev': '@ISmartCoder',
-            'api_channel': '@abirxdhackz'
+            "success": False,
+            "error": "Internal server error",
+            "details": str(e),
+            "request_id": request_id,
+            "spotify_url": spotify_url,
+            "api_dev": "@ISmartCoder",
+            "updates_channel": "@abirxdhackz",
+            "timestamp": timestamp
         }), 500
 
+@app.route('/health', methods=['GET'])
+def health_check():
+    return jsonify({
+        "status": "healthy",
+        "service": "SpotMate Professional API",
+        "api_dev": "@ISmartCoder",
+        "updates_channel": "@abirxdhackz",
+        "timestamp": int(time.time())
+    }), 200
+
+@app.errorhandler(404)
+def not_found(error):
+    return jsonify({
+        "success": False,
+        "error": "Endpoint not found",
+        "available_endpoints": ["/", "/sp/dl", "/health"],
+        "api_dev": "@ISmartCoder",
+        "updates_channel": "@abirxdhackz",
+        "timestamp": int(time.time())
+    }), 404
+
+@app.errorhandler(500)
+def internal_error(error):
+    return jsonify({
+        "success": False,
+        "error": "Internal server error",
+        "api_dev": "@ISmartCoder",
+        "updates_channel": "@abirxdhackz",
+        "timestamp": int(time.time())
+    }), 500
+
 if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0', port=5000)
+    print("="*70)
+    print(" SpotMate Professional API Server")
+    print("="*70)
+    print(" Developer: Abir Arafat Chawdhury")
+    print(" Telegram: @ISmartCoder")
+    print(" Updates Channel: @abirxdhackz")
+    print("="*70)
+    print(" Server starting on http://0.0.0.0:8000")
+    print(" API Documentation: http://0.0.0.0:8000/")
+    print(" Download Endpoint: http://0.0.0.0:8000/sp/dl?url=SPOTIFY_URL")
+    print("="*70)
+    print()
+    
+    app.run(host='0.0.0.0', port=8000, debug=False, threaded=True)
